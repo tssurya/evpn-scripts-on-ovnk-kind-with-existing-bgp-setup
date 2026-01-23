@@ -110,12 +110,11 @@ cleanup_frrk8s() {
         return
     fi
     
-    # Get VRF name from network ID
-    local NETWORK_ID=$(cat /var/run/ovn-kubernetes/cni/network-id-${NETWORK_NAME} 2>/dev/null || echo "")
-    local VRFNAME="mp${NETWORK_ID}-udn-vrf"
-    if [ -n "$NETWORK_ID" ]; then
-        VRFNAME=$(ip -o link show ovn-k8s-mp${NETWORK_ID} 2>/dev/null | grep -oP 'master \K[^ ]+' || echo "mp${NETWORK_ID}-udn-vrf")
-    fi
+    # Get network ID from net-attach-def annotation (same as bash script)
+    local NETWORK_ID=$(kubectl get net-attach-def -n ${NETWORK_NAME} ${NETWORK_NAME} -o jsonpath='{.metadata.annotations.k8s\.ovn\.org/network-id}' 2>/dev/null)
+    
+    # Get VRF name from ovn-k8s-mp interface (same as bash script)
+    local VRFNAME=$(ip -o link show ovn-k8s-mp${NETWORK_ID} 2>/dev/null | grep -oP 'master \K[^ ]+' || echo "mp${NETWORK_ID}-udn-vrf")
     
     # Remove EVPN BGP config via vtysh
     # Note: We run vtysh directly since we're inside the node, and frr-k8s
@@ -228,12 +227,12 @@ setup_ipvrf() {
     
     log "Setting up IP-VRF (VNI: $IPVRF_VNI, VID: $IPVRF_VID)..."
     
-    # Get network ID to find VRF name
-    local NETWORK_ID=$(cat /var/run/ovn-kubernetes/cni/network-id-${NETWORK_NAME} 2>/dev/null || echo "")
-    local VRFNAME="mp${NETWORK_ID}-udn-vrf"
-    if [ -n "$NETWORK_ID" ]; then
-        VRFNAME=$(ip -o link show ovn-k8s-mp${NETWORK_ID} 2>/dev/null | grep -oP 'master \K[^ ]+' || echo "mp${NETWORK_ID}-udn-vrf")
-    fi
+    # Get network ID from net-attach-def annotation (same as bash script)
+    local NETWORK_ID=$(kubectl get net-attach-def -n ${NETWORK_NAME} ${NETWORK_NAME} -o jsonpath='{.metadata.annotations.k8s\.ovn\.org/network-id}' 2>/dev/null)
+    log "  Network ID: $NETWORK_ID"
+    
+    # Get VRF name from ovn-k8s-mp interface (same as bash script)
+    local VRFNAME=$(ip -o link show ovn-k8s-mp${NETWORK_ID} 2>/dev/null | grep -oP 'master \K[^ ]+' || echo "mp${NETWORK_ID}-udn-vrf")
     log "  Using VRF: $VRFNAME"
     
     # Add VLAN/VNI mapping
@@ -266,12 +265,12 @@ setup_frrk8s() {
         exit 1
     fi
     
-    # Get network ID and VRF name
-    local NETWORK_ID=$(cat /var/run/ovn-kubernetes/cni/network-id-${NETWORK_NAME} 2>/dev/null || echo "")
-    local VRFNAME="mp${NETWORK_ID}-udn-vrf"
-    if [ -n "$NETWORK_ID" ]; then
-        VRFNAME=$(ip -o link show ovn-k8s-mp${NETWORK_ID} 2>/dev/null | grep -oP 'master \K[^ ]+' || echo "mp${NETWORK_ID}-udn-vrf")
-    fi
+    # Get network ID from net-attach-def annotation (same as bash script)
+    local NETWORK_ID=$(kubectl get net-attach-def -n ${NETWORK_NAME} ${NETWORK_NAME} -o jsonpath='{.metadata.annotations.k8s\.ovn\.org/network-id}' 2>/dev/null)
+    log "  Network ID: $NETWORK_ID"
+    
+    # Get VRF name from ovn-k8s-mp interface (same as bash script)
+    local VRFNAME=$(ip -o link show ovn-k8s-mp${NETWORK_ID} 2>/dev/null | grep -oP 'master \K[^ ]+' || echo "mp${NETWORK_ID}-udn-vrf")
     log "  VRF: $VRFNAME, FRR container: $FRR_POD"
     
     # Build vtysh commands for base EVPN config
