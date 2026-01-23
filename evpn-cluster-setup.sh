@@ -7,18 +7,18 @@
 #
 # REVERT ME: Remove this script once OVN-K EVPN implementation is complete.
 #
-# Environment variables (set by Go test):
-#   NETWORK_NAME     - Name of the CUDN
-#   EXTERNAL_FRR_IP  - IP of external FRR for BGP peering
-#   BGP_ASN          - BGP Autonomous System Number (e.g., 64512)
-#   CUDN_SUBNETS     - Comma-separated CUDN subnets
-#   OVN_NAMESPACE    - OVN-Kubernetes namespace (e.g., ovn-kubernetes)
-#   FRR_NAMESPACE    - frr-k8s namespace (e.g., frr-k8s-system)
-#   MACVRF_VNI       - MAC-VRF VNI (optional, if MAC-VRF test)
-#   MACVRF_VID       - MAC-VRF VLAN ID (optional, if MAC-VRF test)
-#   IPVRF_VNI        - IP-VRF VNI (optional, if IP-VRF test)
-#   IPVRF_VID        - IP-VRF VLAN ID (optional, if IP-VRF test)
-#   CLEANUP          - Set to "true" to run cleanup instead of setup
+# Environment variables (set by Go test, all prefixed with EVPN_ to avoid conflicts):
+#   EVPN_NETWORK_NAME     - Name of the CUDN
+#   EVPN_EXTERNAL_FRR_IP  - IP of external FRR for BGP peering
+#   EVPN_BGP_ASN          - BGP Autonomous System Number (e.g., 64512)
+#   EVPN_CUDN_SUBNETS     - Comma-separated CUDN subnets
+#   EVPN_OVN_NAMESPACE    - OVN-Kubernetes namespace (e.g., ovn-kubernetes)
+#   EVPN_FRR_NAMESPACE    - frr-k8s namespace (e.g., frr-k8s-system)
+#   EVPN_MACVRF_VNI       - MAC-VRF VNI (optional, if MAC-VRF test)
+#   EVPN_MACVRF_VID       - MAC-VRF VLAN ID (optional, if MAC-VRF test)
+#   EVPN_IPVRF_VNI        - IP-VRF VNI (optional, if IP-VRF test)
+#   EVPN_IPVRF_VID        - IP-VRF VLAN ID (optional, if IP-VRF test)
+#   EVPN_CLEANUP          - Set to "true" to run cleanup instead of setup
 #
 # This script runs on the HOST machine (where kubectl is available).
 # =============================================================================
@@ -32,7 +32,7 @@ log() {
 
 # Validate required environment variables
 validate_env() {
-    local required_vars="NETWORK_NAME EXTERNAL_FRR_IP BGP_ASN OVN_NAMESPACE FRR_NAMESPACE"
+    local required_vars="EVPN_NETWORK_NAME EVPN_EXTERNAL_FRR_IP EVPN_BGP_ASN EVPN_OVN_NAMESPACE EVPN_FRR_NAMESPACE"
     for var in $required_vars; do
         if [ -z "${!var}" ]; then
             echo "ERROR: Required environment variable $var is not set"
@@ -61,7 +61,7 @@ get_node_ip() {
 # Find ovnkube-node pod on a node
 find_ovn_pod() {
     local node_name=$1
-    kubectl get pods -n $OVN_NAMESPACE -l name=ovnkube-node \
+    kubectl get pods -n $EVPN_OVN_NAMESPACE -l name=ovnkube-node \
         --field-selector spec.nodeName=$node_name \
         -o jsonpath='{.items[0].metadata.name}' 2>/dev/null
 }
@@ -69,17 +69,17 @@ find_ovn_pod() {
 # Find frr-k8s pod on a node
 find_frr_pod() {
     local node_name=$1
-    kubectl get pods -n $FRR_NAMESPACE -l app=frr-k8s \
+    kubectl get pods -n $EVPN_FRR_NAMESPACE -l app=frr-k8s \
         --field-selector spec.nodeName=$node_name \
         -o jsonpath='{.items[0].metadata.name}' 2>/dev/null
 }
 
-# Detect IP families from CUDN_SUBNETS
+# Detect IP families from EVPN_CUDN_SUBNETS
 detect_ip_families() {
     HAS_IPV4=false
     HAS_IPV6=false
     
-    IFS=',' read -ra SUBNETS <<< "$CUDN_SUBNETS"
+    IFS=',' read -ra SUBNETS <<< "$EVPN_CUDN_SUBNETS"
     for subnet in "${SUBNETS[@]}"; do
         if [[ "$subnet" == *":"* ]]; then
             HAS_IPV6=true
@@ -99,23 +99,23 @@ cleanup_node() {
     
     local OVN_POD=$(find_ovn_pod $node_name)
     local FRR_POD=$(find_frr_pod $node_name)
-    local VRFNAME=$NETWORK_NAME
+    local VRFNAME=$EVPN_NETWORK_NAME
     
     # Cleanup frr-k8s
     if [ -n "$FRR_POD" ]; then
         log "[$node_name] Cleaning up frr-k8s EVPN config..."
-        kubectl exec -n $FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
+        kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
             -c "configure terminal" \
-            -c "router bgp ${BGP_ASN}" \
+            -c "router bgp ${EVPN_BGP_ASN}" \
             -c "address-family l2vpn evpn" \
             -c "no advertise-all-vni" \
             -c "exit-address-family" \
             -c "end" 2>/dev/null || true
         
-        if [ -n "$IPVRF_VNI" ]; then
-            kubectl exec -n $FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
+        if [ -n "$EVPN_IPVRF_VNI" ]; then
+            kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
                 -c "configure terminal" \
-                -c "no router bgp ${BGP_ASN} vrf $VRFNAME" \
+                -c "no router bgp ${EVPN_BGP_ASN} vrf $VRFNAME" \
                 -c "no vrf $VRFNAME" \
                 -c "end" 2>/dev/null || true
         fi
@@ -125,15 +125,15 @@ cleanup_node() {
     if [ -n "$OVN_POD" ]; then
         log "[$node_name] Cleaning up network devices..."
         
-        local NETWORK_DOTTED=${NETWORK_NAME//-/.}
+        local NETWORK_DOTTED=${EVPN_NETWORK_NAME//-/.}
         local OVN_PORT="cluster_udn_${NETWORK_DOTTED}_evpn_port"
         
-        kubectl exec -n $OVN_NAMESPACE $OVN_POD -c ovnkube-controller -- /bin/sh -c "
+        kubectl exec -n $EVPN_OVN_NAMESPACE $OVN_POD -c ovnkube-controller -- /bin/sh -c "
             # IP-VRF SVI
-            ip link del br0.${IPVRF_VID:-0} 2>/dev/null || true
+            ip link del br0.${EVPN_IPVRF_VID:-0} 2>/dev/null || true
             
             # MAC-VRF OVS/OVN
-            ovs-vsctl --if-exists del-port br-int evpn${MACVRF_VNI:-0} 2>/dev/null || true
+            ovs-vsctl --if-exists del-port br-int evpn${EVPN_MACVRF_VNI:-0} 2>/dev/null || true
             ovn-nbctl --if-exists lsp-del ${OVN_PORT} 2>/dev/null || true
             
             # EVPN bridge
@@ -190,7 +190,7 @@ setup_node() {
     
     # === Setup EVPN Bridge ===
     log "[$node_name] Setting up EVPN bridge (br0/vxlan0)..."
-    kubectl exec -n $OVN_NAMESPACE $OVN_POD -c ovnkube-controller -- /bin/sh -c "
+    kubectl exec -n $EVPN_OVN_NAMESPACE $OVN_POD -c ovnkube-controller -- /bin/sh -c "
         ip link del br0 2>/dev/null || true
         ip link del vxlan0 2>/dev/null || true
         
@@ -207,25 +207,25 @@ setup_node() {
     "
     
     # === Setup MAC-VRF ===
-    if [ -n "$MACVRF_VNI" ] && [ -n "$MACVRF_VID" ]; then
-        log "[$node_name] Setting up MAC-VRF (VNI: $MACVRF_VNI, VID: $MACVRF_VID)..."
+    if [ -n "$EVPN_MACVRF_VNI" ] && [ -n "$EVPN_MACVRF_VID" ]; then
+        log "[$node_name] Setting up MAC-VRF (VNI: $EVPN_MACVRF_VNI, VID: $EVPN_MACVRF_VID)..."
         
-        local NETWORK_DOTTED=${NETWORK_NAME//-/.}
+        local NETWORK_DOTTED=${EVPN_NETWORK_NAME//-/.}
         local OVN_SWITCH="cluster_udn_${NETWORK_DOTTED}_ovn_layer2_switch"
         local OVN_PORT="cluster_udn_${NETWORK_DOTTED}_evpn_port"
         
-        kubectl exec -n $OVN_NAMESPACE $OVN_POD -c ovnkube-controller -- /bin/sh -c "
-            bridge vlan add dev br0 vid $MACVRF_VID self
-            bridge vlan add dev vxlan0 vid $MACVRF_VID
-            bridge vni add dev vxlan0 vni $MACVRF_VNI
-            bridge vlan add dev vxlan0 vid $MACVRF_VID tunnel_info id $MACVRF_VNI
+        kubectl exec -n $EVPN_OVN_NAMESPACE $OVN_POD -c ovnkube-controller -- /bin/sh -c "
+            bridge vlan add dev br0 vid $EVPN_MACVRF_VID self
+            bridge vlan add dev vxlan0 vid $EVPN_MACVRF_VID
+            bridge vni add dev vxlan0 vni $EVPN_MACVRF_VNI
+            bridge vlan add dev vxlan0 vid $EVPN_MACVRF_VID tunnel_info id $EVPN_MACVRF_VNI
             
-            ovs-vsctl --if-exists del-port br-int evpn${MACVRF_VNI}
-            ovs-vsctl add-port br-int evpn${MACVRF_VNI} -- set interface evpn${MACVRF_VNI} type=internal external-ids:iface-id=${OVN_PORT}
+            ovs-vsctl --if-exists del-port br-int evpn${EVPN_MACVRF_VNI}
+            ovs-vsctl add-port br-int evpn${EVPN_MACVRF_VNI} -- set interface evpn${EVPN_MACVRF_VNI} type=internal external-ids:iface-id=${OVN_PORT}
             
-            ip link set evpn${MACVRF_VNI} master br0
-            bridge vlan add dev evpn${MACVRF_VNI} vid $MACVRF_VID pvid untagged
-            ip link set evpn${MACVRF_VNI} up
+            ip link set evpn${EVPN_MACVRF_VNI} master br0
+            bridge vlan add dev evpn${EVPN_MACVRF_VNI} vid $EVPN_MACVRF_VID pvid untagged
+            ip link set evpn${EVPN_MACVRF_VNI} up
             
             ovn-nbctl --if-exists lsp-del ${OVN_PORT}
             ovn-nbctl lsp-add $OVN_SWITCH ${OVN_PORT}
@@ -234,22 +234,22 @@ setup_node() {
     fi
     
     # === Setup IP-VRF ===
-    if [ -n "$IPVRF_VNI" ] && [ -n "$IPVRF_VID" ]; then
-        log "[$node_name] Setting up IP-VRF (VNI: $IPVRF_VNI, VID: $IPVRF_VID)..."
+    if [ -n "$EVPN_IPVRF_VNI" ] && [ -n "$EVPN_IPVRF_VID" ]; then
+        log "[$node_name] Setting up IP-VRF (VNI: $EVPN_IPVRF_VNI, VID: $EVPN_IPVRF_VID)..."
         
-        local VRFNAME=$NETWORK_NAME
+        local VRFNAME=$EVPN_NETWORK_NAME
         
-        kubectl exec -n $OVN_NAMESPACE $OVN_POD -c ovnkube-controller -- /bin/sh -c "
-            bridge vlan add dev br0 vid $IPVRF_VID self
-            bridge vlan add dev vxlan0 vid $IPVRF_VID
-            bridge vni add dev vxlan0 vni $IPVRF_VNI
-            bridge vlan add dev vxlan0 vid $IPVRF_VID tunnel_info id $IPVRF_VNI
+        kubectl exec -n $EVPN_OVN_NAMESPACE $OVN_POD -c ovnkube-controller -- /bin/sh -c "
+            bridge vlan add dev br0 vid $EVPN_IPVRF_VID self
+            bridge vlan add dev vxlan0 vid $EVPN_IPVRF_VID
+            bridge vni add dev vxlan0 vni $EVPN_IPVRF_VNI
+            bridge vlan add dev vxlan0 vid $EVPN_IPVRF_VID tunnel_info id $EVPN_IPVRF_VNI
             
-            ip link del br0.$IPVRF_VID 2>/dev/null || true
-            ip link add br0.$IPVRF_VID link br0 type vlan id $IPVRF_VID
-            ip link set br0.$IPVRF_VID addrgenmode none
-            ip link set br0.$IPVRF_VID master $VRFNAME
-            ip link set br0.$IPVRF_VID up
+            ip link del br0.$EVPN_IPVRF_VID 2>/dev/null || true
+            ip link add br0.$EVPN_IPVRF_VID link br0 type vlan id $EVPN_IPVRF_VID
+            ip link set br0.$EVPN_IPVRF_VID addrgenmode none
+            ip link set br0.$EVPN_IPVRF_VID master $VRFNAME
+            ip link set br0.$EVPN_IPVRF_VID up
         "
     fi
     
@@ -261,28 +261,28 @@ setup_node() {
     
     log "[$node_name] Configuring frr-k8s for EVPN..."
     
-    local VRFNAME=$NETWORK_NAME
+    local VRFNAME=$EVPN_NETWORK_NAME
     local VTYSH_CMDS="-c 'configure terminal'"
     
     # VRF-VNI binding first
-    if [ -n "$IPVRF_VNI" ]; then
+    if [ -n "$EVPN_IPVRF_VNI" ]; then
         VTYSH_CMDS="$VTYSH_CMDS -c 'vrf ${VRFNAME}'"
-        VTYSH_CMDS="$VTYSH_CMDS -c 'vni ${IPVRF_VNI}'"
+        VTYSH_CMDS="$VTYSH_CMDS -c 'vni ${EVPN_IPVRF_VNI}'"
         VTYSH_CMDS="$VTYSH_CMDS -c 'exit-vrf'"
     fi
     
     # Global EVPN BGP
-    VTYSH_CMDS="$VTYSH_CMDS -c 'router bgp ${BGP_ASN}'"
+    VTYSH_CMDS="$VTYSH_CMDS -c 'router bgp ${EVPN_BGP_ASN}'"
     VTYSH_CMDS="$VTYSH_CMDS -c 'address-family l2vpn evpn'"
-    VTYSH_CMDS="$VTYSH_CMDS -c 'neighbor ${EXTERNAL_FRR_IP} activate'"
+    VTYSH_CMDS="$VTYSH_CMDS -c 'neighbor ${EVPN_EXTERNAL_FRR_IP} activate'"
     VTYSH_CMDS="$VTYSH_CMDS -c 'advertise-all-vni'"
     
     # MAC-VRF VNI config
-    if [ -n "$MACVRF_VNI" ]; then
-        VTYSH_CMDS="$VTYSH_CMDS -c 'vni ${MACVRF_VNI}'"
-        VTYSH_CMDS="$VTYSH_CMDS -c 'rd ${BGP_ASN}:${MACVRF_VNI}'"
-        VTYSH_CMDS="$VTYSH_CMDS -c 'route-target import ${BGP_ASN}:${MACVRF_VNI}'"
-        VTYSH_CMDS="$VTYSH_CMDS -c 'route-target export ${BGP_ASN}:${MACVRF_VNI}'"
+    if [ -n "$EVPN_MACVRF_VNI" ]; then
+        VTYSH_CMDS="$VTYSH_CMDS -c 'vni ${EVPN_MACVRF_VNI}'"
+        VTYSH_CMDS="$VTYSH_CMDS -c 'rd ${EVPN_BGP_ASN}:${EVPN_MACVRF_VNI}'"
+        VTYSH_CMDS="$VTYSH_CMDS -c 'route-target import ${EVPN_BGP_ASN}:${EVPN_MACVRF_VNI}'"
+        VTYSH_CMDS="$VTYSH_CMDS -c 'route-target export ${EVPN_BGP_ASN}:${EVPN_MACVRF_VNI}'"
         VTYSH_CMDS="$VTYSH_CMDS -c 'exit-vni'"
     fi
     
@@ -290,8 +290,8 @@ setup_node() {
     VTYSH_CMDS="$VTYSH_CMDS -c 'exit'"
     
     # IP-VRF BGP config (dual-stack aware)
-    if [ -n "$IPVRF_VNI" ]; then
-        VTYSH_CMDS="$VTYSH_CMDS -c 'router bgp ${BGP_ASN} vrf ${VRFNAME}'"
+    if [ -n "$EVPN_IPVRF_VNI" ]; then
+        VTYSH_CMDS="$VTYSH_CMDS -c 'router bgp ${EVPN_BGP_ASN} vrf ${VRFNAME}'"
         
         if [ "$HAS_IPV4" = "true" ]; then
             VTYSH_CMDS="$VTYSH_CMDS -c 'address-family ipv4 unicast'"
@@ -306,9 +306,9 @@ setup_node() {
         fi
         
         VTYSH_CMDS="$VTYSH_CMDS -c 'address-family l2vpn evpn'"
-        VTYSH_CMDS="$VTYSH_CMDS -c 'rd ${BGP_ASN}:${IPVRF_VNI}'"
-        VTYSH_CMDS="$VTYSH_CMDS -c 'route-target import ${BGP_ASN}:${IPVRF_VNI}'"
-        VTYSH_CMDS="$VTYSH_CMDS -c 'route-target export ${BGP_ASN}:${IPVRF_VNI}'"
+        VTYSH_CMDS="$VTYSH_CMDS -c 'rd ${EVPN_BGP_ASN}:${EVPN_IPVRF_VNI}'"
+        VTYSH_CMDS="$VTYSH_CMDS -c 'route-target import ${EVPN_BGP_ASN}:${EVPN_IPVRF_VNI}'"
+        VTYSH_CMDS="$VTYSH_CMDS -c 'route-target export ${EVPN_BGP_ASN}:${EVPN_IPVRF_VNI}'"
         
         if [ "$HAS_IPV4" = "true" ]; then
             VTYSH_CMDS="$VTYSH_CMDS -c 'advertise ipv4 unicast'"
@@ -322,30 +322,30 @@ setup_node() {
     
     VTYSH_CMDS="$VTYSH_CMDS -c 'end'"
     
-    eval "kubectl exec -n $FRR_NAMESPACE $FRR_POD -c frr -- vtysh $VTYSH_CMDS"
+    eval "kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh $VTYSH_CMDS"
     
     # Force route re-evaluation for IP-VRF
-    if [ -n "$IPVRF_VNI" ]; then
+    if [ -n "$EVPN_IPVRF_VNI" ]; then
         log "[$node_name] Waiting for BGP routes..."
         sleep 10
         
         log "[$node_name] Forcing route re-evaluation..."
-        kubectl exec -n $FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
+        kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
             -c "configure terminal" \
-            -c "router bgp ${BGP_ASN} vrf ${VRFNAME}" \
+            -c "router bgp ${EVPN_BGP_ASN} vrf ${VRFNAME}" \
             -c "address-family l2vpn evpn" \
-            -c "no route-target import ${BGP_ASN}:${IPVRF_VNI}" \
-            -c "route-target import ${BGP_ASN}:${IPVRF_VNI}" \
+            -c "no route-target import ${EVPN_BGP_ASN}:${EVPN_IPVRF_VNI}" \
+            -c "route-target import ${EVPN_BGP_ASN}:${EVPN_IPVRF_VNI}" \
             -c "end" 2>/dev/null || true
         
         sleep 5
         
-        kubectl exec -n $FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
+        kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
             -c "configure terminal" \
-            -c "router bgp ${BGP_ASN} vrf ${VRFNAME}" \
+            -c "router bgp ${EVPN_BGP_ASN} vrf ${VRFNAME}" \
             -c "address-family l2vpn evpn" \
-            -c "no route-target import ${BGP_ASN}:${IPVRF_VNI}" \
-            -c "route-target import ${BGP_ASN}:${IPVRF_VNI}" \
+            -c "no route-target import ${EVPN_BGP_ASN}:${EVPN_IPVRF_VNI}" \
+            -c "route-target import ${EVPN_BGP_ASN}:${EVPN_IPVRF_VNI}" \
             -c "end" 2>/dev/null || true
     fi
     
@@ -354,12 +354,12 @@ setup_node() {
 
 run_setup() {
     log "Starting EVPN setup on all nodes..."
-    log "  NETWORK_NAME: $NETWORK_NAME"
-    log "  EXTERNAL_FRR_IP: $EXTERNAL_FRR_IP"
-    log "  BGP_ASN: $BGP_ASN"
-    log "  CUDN_SUBNETS: $CUDN_SUBNETS"
-    log "  MACVRF_VNI/VID: ${MACVRF_VNI:-none}/${MACVRF_VID:-none}"
-    log "  IPVRF_VNI/VID: ${IPVRF_VNI:-none}/${IPVRF_VID:-none}"
+    log "  EVPN_NETWORK_NAME: $EVPN_NETWORK_NAME"
+    log "  EVPN_EXTERNAL_FRR_IP: $EVPN_EXTERNAL_FRR_IP"
+    log "  EVPN_BGP_ASN: $EVPN_BGP_ASN"
+    log "  EVPN_CUDN_SUBNETS: $EVPN_CUDN_SUBNETS"
+    log "  EVPN_MACVRF_VNI/VID: ${EVPN_MACVRF_VNI:-none}/${EVPN_MACVRF_VID:-none}"
+    log "  EVPN_IPVRF_VNI/VID: ${EVPN_IPVRF_VNI:-none}/${EVPN_IPVRF_VID:-none}"
     
     # Detect IP families once
     detect_ip_families
@@ -379,7 +379,7 @@ run_setup() {
 
 validate_env
 
-if [ "$CLEANUP" = "true" ]; then
+if [ "$EVPN_CLEANUP" = "true" ]; then
     run_cleanup
 else
     run_setup
