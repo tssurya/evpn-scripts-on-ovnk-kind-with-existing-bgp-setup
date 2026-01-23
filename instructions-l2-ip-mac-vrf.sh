@@ -549,9 +549,10 @@ read
 header "Step 16: Verify Connectivity"
 
 echo "=== MAC-VRF: Testing pod -> agnhost-macvrf (${MACVRF_AGNHOST_IP}) via L2 ==="
-run_cmd kubectl exec -n evpn-l2-combo-test test-pod -- ping -c 3 ${MACVRF_AGNHOST_IP}
+run_cmd kubectl exec -n evpn-l2-combo-test test-pod -- curl -s --max-time 5 http://${MACVRF_AGNHOST_IP}:8080/hostname
 
 echo "=== MAC-VRF: Testing agnhost-macvrf -> pod ($POD_IP) via L2 ==="
+# Note: test pod runs 'sleep infinity', not netexec, so we use ping here
 run_cmd docker exec agnhost-macvrf ping -c 3 $POD_IP
 
 echo "=== IP-VRF: Testing pod -> agnhost-ipvrf (${IPVRF_AGNHOST_IP}) via L3 ==="
