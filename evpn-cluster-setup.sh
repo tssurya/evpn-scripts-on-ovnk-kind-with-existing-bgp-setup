@@ -325,28 +325,22 @@ setup_node() {
     eval "kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh $VTYSH_CMDS"
     
     # Force route re-evaluation for IP-VRF
+    # This handles the timing issue where routes arrived before RT was configured
+    # Toggle BOTH import AND export to force FRR to re-evaluate routes
     if [ -n "$EVPN_IPVRF_VNI" ]; then
-        log "[$node_name] Waiting for BGP routes..."
+        log "[$node_name] Waiting for BGP routes to arrive..."
         sleep 10
         
-        log "[$node_name] Forcing route re-evaluation..."
+        log "[$node_name] Forcing route re-evaluation by toggling route-targets..."
         kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
             -c "configure terminal" \
             -c "router bgp ${EVPN_BGP_ASN} vrf ${VRFNAME}" \
             -c "address-family l2vpn evpn" \
             -c "no route-target import ${EVPN_BGP_ASN}:${EVPN_IPVRF_VNI}" \
             -c "route-target import ${EVPN_BGP_ASN}:${EVPN_IPVRF_VNI}" \
-            -c "end" 2>/dev/null || true
-        
-        sleep 5
-        
-        kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
-            -c "configure terminal" \
-            -c "router bgp ${EVPN_BGP_ASN} vrf ${VRFNAME}" \
-            -c "address-family l2vpn evpn" \
-            -c "no route-target import ${EVPN_BGP_ASN}:${EVPN_IPVRF_VNI}" \
-            -c "route-target import ${EVPN_BGP_ASN}:${EVPN_IPVRF_VNI}" \
-            -c "end" 2>/dev/null || true
+            -c "no route-target export ${EVPN_BGP_ASN}:${EVPN_IPVRF_VNI}" \
+            -c "route-target export ${EVPN_BGP_ASN}:${EVPN_IPVRF_VNI}" \
+            -c "end" 2>/dev/null || log "[$node_name] (Route re-evaluation skipped - fresh install)"
     fi
     
     log "[$node_name] Setup complete"
