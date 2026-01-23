@@ -12,6 +12,7 @@
 #   EXTERNAL_FRR_IP  - IP of external FRR for BGP peering
 #   BGP_ASN          - BGP Autonomous System Number (e.g., 64512)
 #   CUDN_SUBNETS     - Comma-separated CUDN subnets
+#   NODE_IP          - Node's internal IP (for VTEP)
 #   MACVRF_VNI       - MAC-VRF VNI (optional, if MAC-VRF test)
 #   MACVRF_VID       - MAC-VRF VLAN ID (optional, if MAC-VRF test)
 #   IPVRF_VNI        - IP-VRF VNI (optional, if IP-VRF test)
@@ -23,9 +24,6 @@
 
 set -e
 
-# Set KUBECONFIG for kubectl commands inside KIND nodes
-export KUBECONFIG=/etc/kubernetes/admin.conf
-
 # Log with timestamp
 log() {
     echo "[$(date '+%H:%M:%S')] $1"
@@ -34,6 +32,10 @@ log() {
 # Validate required environment variables
 validate_env() {
     local required_vars="NETWORK_NAME EXTERNAL_FRR_IP BGP_ASN"
+    # NODE_IP is only required for setup, not cleanup
+    if [ "$CLEANUP" != "true" ]; then
+        required_vars="$required_vars NODE_IP"
+    fi
     for var in $required_vars; do
         if [ -z "${!var}" ]; then
             echo "ERROR: Required environment variable $var is not set"
@@ -158,12 +160,7 @@ run_cleanup() {
 setup_evpn_bridge() {
     log "Setting up EVPN bridge (br0/vxlan0)..."
     
-    # Get node IP for VTEP (same as bash script - use ovnkube-node pod IP which is node IP for hostNetwork)
-    local NODE_IP=$(kubectl get pods -l app=ovnkube-node -n ovn-kubernetes --field-selector spec.nodeName=$(hostname) -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
-    if [ -z "$NODE_IP" ]; then
-        log "ERROR: Could not determine node IP from ovnkube-node pod"
-        exit 1
-    fi
+    # NODE_IP is passed from Go test via environment variable
     
     # Clean up any existing config
     ip link del br0 2>/dev/null || true
@@ -362,6 +359,7 @@ setup_frrk8s() {
 run_setup() {
     log "Starting EVPN setup on $(hostname)..."
     log "  NETWORK_NAME: $NETWORK_NAME"
+    log "  NODE_IP: $NODE_IP"
     log "  EXTERNAL_FRR_IP: $EXTERNAL_FRR_IP"
     log "  BGP_ASN: $BGP_ASN"
     log "  CUDN_SUBNETS: $CUDN_SUBNETS"
