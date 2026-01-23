@@ -23,6 +23,9 @@
 
 set -e
 
+# Set KUBECONFIG for kubectl commands inside KIND nodes
+export KUBECONFIG=/etc/kubernetes/admin.conf
+
 # Log with timestamp
 log() {
     echo "[$(date '+%H:%M:%S')] $1"
@@ -110,11 +113,8 @@ cleanup_frrk8s() {
         return
     fi
     
-    # Get network ID from net-attach-def annotation (same as bash script)
-    local NETWORK_ID=$(kubectl get net-attach-def -n ${NETWORK_NAME} ${NETWORK_NAME} -o jsonpath='{.metadata.annotations.k8s\.ovn\.org/network-id}' 2>/dev/null)
-    
-    # Get VRF name from ovn-k8s-mp interface (same as bash script)
-    local VRFNAME=$(ip -o link show ovn-k8s-mp${NETWORK_ID} 2>/dev/null | grep -oP 'master \K[^ ]+' || echo "mp${NETWORK_ID}-udn-vrf")
+    # Use network name as VRF name (works for names ≤15 chars, which our tests always use)
+    local VRFNAME=$NETWORK_NAME
     
     # Remove EVPN BGP config via vtysh
     # Note: We run vtysh directly since we're inside the node, and frr-k8s
@@ -158,8 +158,12 @@ run_cleanup() {
 setup_evpn_bridge() {
     log "Setting up EVPN bridge (br0/vxlan0)..."
     
-    # Get node IP for VTEP
-    local NODE_IP=$(hostname -I | awk '{print $1}')
+    # Get node IP for VTEP (same as bash script - use ovnkube-node pod IP which is node IP for hostNetwork)
+    local NODE_IP=$(kubectl get pods -l app=ovnkube-node -n ovn-kubernetes --field-selector spec.nodeName=$(hostname) -o jsonpath='{.items[0].status.podIP}' 2>/dev/null)
+    if [ -z "$NODE_IP" ]; then
+        log "ERROR: Could not determine node IP from ovnkube-node pod"
+        exit 1
+    fi
     
     # Clean up any existing config
     ip link del br0 2>/dev/null || true
@@ -227,12 +231,8 @@ setup_ipvrf() {
     
     log "Setting up IP-VRF (VNI: $IPVRF_VNI, VID: $IPVRF_VID)..."
     
-    # Get network ID from net-attach-def annotation (same as bash script)
-    local NETWORK_ID=$(kubectl get net-attach-def -n ${NETWORK_NAME} ${NETWORK_NAME} -o jsonpath='{.metadata.annotations.k8s\.ovn\.org/network-id}' 2>/dev/null)
-    log "  Network ID: $NETWORK_ID"
-    
-    # Get VRF name from ovn-k8s-mp interface (same as bash script)
-    local VRFNAME=$(ip -o link show ovn-k8s-mp${NETWORK_ID} 2>/dev/null | grep -oP 'master \K[^ ]+' || echo "mp${NETWORK_ID}-udn-vrf")
+    # Use network name as VRF name (works for names ≤15 chars, which our tests always use)
+    local VRFNAME=$NETWORK_NAME
     log "  Using VRF: $VRFNAME"
     
     # Add VLAN/VNI mapping
@@ -265,24 +265,27 @@ setup_frrk8s() {
         exit 1
     fi
     
-    # Get network ID from net-attach-def annotation (same as bash script)
-    local NETWORK_ID=$(kubectl get net-attach-def -n ${NETWORK_NAME} ${NETWORK_NAME} -o jsonpath='{.metadata.annotations.k8s\.ovn\.org/network-id}' 2>/dev/null)
-    log "  Network ID: $NETWORK_ID"
-    
-    # Get VRF name from ovn-k8s-mp interface (same as bash script)
-    local VRFNAME=$(ip -o link show ovn-k8s-mp${NETWORK_ID} 2>/dev/null | grep -oP 'master \K[^ ]+' || echo "mp${NETWORK_ID}-udn-vrf")
+    # Use network name as VRF name (works for names ≤15 chars, which our tests always use)
+    local VRFNAME=$NETWORK_NAME
     log "  VRF: $VRFNAME, FRR container: $FRR_POD"
     
-    # Build vtysh commands for base EVPN config
+    # Build vtysh commands for base EVPN config (matching bash script order)
     local VTYSH_CMDS="-c 'configure terminal'"
     
-    # Global EVPN BGP config
+    # IP-VRF: VRF-VNI binding FIRST (before global BGP, same as bash script lines 480-482)
+    if [ -n "$IPVRF_VNI" ]; then
+        VTYSH_CMDS="$VTYSH_CMDS -c 'vrf ${VRFNAME}'"
+        VTYSH_CMDS="$VTYSH_CMDS -c 'vni ${IPVRF_VNI}'"
+        VTYSH_CMDS="$VTYSH_CMDS -c 'exit-vrf'"
+    fi
+    
+    # Global EVPN BGP config (same as bash script lines 483-492)
     VTYSH_CMDS="$VTYSH_CMDS -c 'router bgp ${BGP_ASN}'"
     VTYSH_CMDS="$VTYSH_CMDS -c 'address-family l2vpn evpn'"
     VTYSH_CMDS="$VTYSH_CMDS -c 'neighbor ${EXTERNAL_FRR_IP} activate'"
     VTYSH_CMDS="$VTYSH_CMDS -c 'advertise-all-vni'"
     
-    # MAC-VRF VNI config
+    # MAC-VRF VNI config (same as bash script lines 487-491)
     if [ -n "$MACVRF_VNI" ]; then
         VTYSH_CMDS="$VTYSH_CMDS -c 'vni ${MACVRF_VNI}'"
         VTYSH_CMDS="$VTYSH_CMDS -c 'rd ${BGP_ASN}:${MACVRF_VNI}'"
@@ -294,13 +297,8 @@ setup_frrk8s() {
     VTYSH_CMDS="$VTYSH_CMDS -c 'exit-address-family'"
     VTYSH_CMDS="$VTYSH_CMDS -c 'exit'"
     
-    # IP-VRF config (dual-stack aware)
+    # IP-VRF BGP config (same as bash script lines 494-503, dual-stack aware)
     if [ -n "$IPVRF_VNI" ]; then
-        # VRF-VNI binding
-        VTYSH_CMDS="$VTYSH_CMDS -c 'vrf ${VRFNAME}'"
-        VTYSH_CMDS="$VTYSH_CMDS -c 'vni ${IPVRF_VNI}'"
-        VTYSH_CMDS="$VTYSH_CMDS -c 'exit-vrf'"
-        
         # BGP for VRF
         VTYSH_CMDS="$VTYSH_CMDS -c 'router bgp ${BGP_ASN} vrf ${VRFNAME}'"
         
