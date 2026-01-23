@@ -322,7 +322,13 @@ setup_node() {
     
     VTYSH_CMDS="$VTYSH_CMDS -c 'end'"
     
-    eval "kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh $VTYSH_CMDS"
+    # Run vtysh config - capture output for debugging if it fails
+    local vtysh_output
+    if ! vtysh_output=$(eval "kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh $VTYSH_CMDS" 2>&1); then
+        log "[$node_name] ERROR: Failed to configure frr-k8s EVPN"
+        log "[$node_name] vtysh output: $vtysh_output"
+        return 1
+    fi
     
     # Force route re-evaluation for IP-VRF
     # This handles the timing issue where routes arrived before RT was configured
