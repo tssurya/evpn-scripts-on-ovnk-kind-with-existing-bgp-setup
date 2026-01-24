@@ -262,16 +262,35 @@ setup_node() {
     log "[$node_name] Configuring frr-k8s for EVPN..."
     
     local VRFNAME=$EVPN_NETWORK_NAME
-    local VTYSH_CMDS="-c 'configure terminal'"
     
-    # VRF-VNI binding first
+    # =============================================================================
+    # IMPORTANT: Split vtysh commands to allow zebra-bgpd sync for VRF-VNI binding
+    # =============================================================================
+    # FRR has a timing issue where bgpd needs time to learn about VRF-VNI associations
+    # from zebra. If we configure the BGP VRF with route-targets before bgpd knows
+    # about the VRF-VNI mapping, routes won't be imported into the VRF.
+    #
+    # Solution: Split into 3 phases with delays between them.
+    # =============================================================================
+    
+    # Phase 1: VRF-VNI binding (zebra config)
     if [ -n "$EVPN_IPVRF_VNI" ]; then
-        VTYSH_CMDS="$VTYSH_CMDS -c 'vrf ${VRFNAME}'"
-        VTYSH_CMDS="$VTYSH_CMDS -c 'vni ${EVPN_IPVRF_VNI}'"
-        VTYSH_CMDS="$VTYSH_CMDS -c 'exit-vrf'"
+        log "[$node_name] Phase 1: Configuring VRF-VNI binding..."
+        kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
+            -c "configure terminal" \
+            -c "vrf ${VRFNAME}" \
+            -c "vni ${EVPN_IPVRF_VNI}" \
+            -c "exit-vrf" \
+            -c "end" 2>/dev/null
+        
+        # Wait for zebra to notify bgpd about the VRF-VNI association
+        log "[$node_name] Waiting for zebra-bgpd VRF-VNI sync..."
+        sleep 5
     fi
     
-    # Global EVPN BGP
+    # Phase 2: Global EVPN BGP config (advertise-all-vni triggers VNI discovery)
+    log "[$node_name] Phase 2: Configuring global EVPN BGP..."
+    local VTYSH_CMDS="-c 'configure terminal'"
     VTYSH_CMDS="$VTYSH_CMDS -c 'router bgp ${EVPN_BGP_ASN}'"
     VTYSH_CMDS="$VTYSH_CMDS -c 'address-family l2vpn evpn'"
     VTYSH_CMDS="$VTYSH_CMDS -c 'neighbor ${EVPN_EXTERNAL_FRR_IP} activate'"
@@ -287,24 +306,26 @@ setup_node() {
     fi
     
     VTYSH_CMDS="$VTYSH_CMDS -c 'exit-address-family'"
-    VTYSH_CMDS="$VTYSH_CMDS -c 'exit'"
+    VTYSH_CMDS="$VTYSH_CMDS -c 'end'"
     
-    # IP-VRF BGP config (dual-stack aware)
+    local vtysh_output
+    if ! vtysh_output=$(eval "kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh $VTYSH_CMDS" 2>&1); then
+        log "[$node_name] ERROR: Failed to configure global EVPN BGP"
+        log "[$node_name] vtysh output: $vtysh_output"
+        return 1
+    fi
+    
+    # Phase 3: IP-VRF BGP config with route-targets (after bgpd knows about VRF-VNI)
+    # NOTE: We do NOT use 'redistribute connected' here because RouteAdvertisements
+    # handles pod subnet advertisement via explicit Prefixes in FRRConfiguration.
     if [ -n "$EVPN_IPVRF_VNI" ]; then
+        # Wait for advertise-all-vni to discover VNIs and associate with VRFs
+        log "[$node_name] Waiting for VNI discovery..."
+        sleep 5
+        
+        log "[$node_name] Phase 3: Configuring IP-VRF BGP with route-targets..."
+        VTYSH_CMDS="-c 'configure terminal'"
         VTYSH_CMDS="$VTYSH_CMDS -c 'router bgp ${EVPN_BGP_ASN} vrf ${VRFNAME}'"
-        
-        if [ "$HAS_IPV4" = "true" ]; then
-            VTYSH_CMDS="$VTYSH_CMDS -c 'address-family ipv4 unicast'"
-            VTYSH_CMDS="$VTYSH_CMDS -c 'redistribute connected'"
-            VTYSH_CMDS="$VTYSH_CMDS -c 'exit-address-family'"
-        fi
-        
-        if [ "$HAS_IPV6" = "true" ]; then
-            VTYSH_CMDS="$VTYSH_CMDS -c 'address-family ipv6 unicast'"
-            VTYSH_CMDS="$VTYSH_CMDS -c 'redistribute connected'"
-            VTYSH_CMDS="$VTYSH_CMDS -c 'exit-address-family'"
-        fi
-        
         VTYSH_CMDS="$VTYSH_CMDS -c 'address-family l2vpn evpn'"
         VTYSH_CMDS="$VTYSH_CMDS -c 'rd ${EVPN_BGP_ASN}:${EVPN_IPVRF_VNI}'"
         VTYSH_CMDS="$VTYSH_CMDS -c 'route-target import ${EVPN_BGP_ASN}:${EVPN_IPVRF_VNI}'"
@@ -318,16 +339,13 @@ setup_node() {
         fi
         
         VTYSH_CMDS="$VTYSH_CMDS -c 'exit-address-family'"
-    fi
-    
-    VTYSH_CMDS="$VTYSH_CMDS -c 'end'"
-    
-    # Run vtysh config - capture output for debugging if it fails
-    local vtysh_output
-    if ! vtysh_output=$(eval "kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh $VTYSH_CMDS" 2>&1); then
-        log "[$node_name] ERROR: Failed to configure frr-k8s EVPN"
-        log "[$node_name] vtysh output: $vtysh_output"
-        return 1
+        VTYSH_CMDS="$VTYSH_CMDS -c 'end'"
+        
+        if ! vtysh_output=$(eval "kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh $VTYSH_CMDS" 2>&1); then
+            log "[$node_name] ERROR: Failed to configure IP-VRF BGP"
+            log "[$node_name] vtysh output: $vtysh_output"
+            return 1
+        fi
     fi
     
     # Force route re-evaluation for IP-VRF

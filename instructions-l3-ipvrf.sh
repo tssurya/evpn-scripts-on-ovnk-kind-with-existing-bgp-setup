@@ -117,6 +117,8 @@ for ip in $NODE_IPS; do
 done
 
 # Run vtysh with dynamic neighbors
+# NOTE: Using explicit 'network' statement instead of 'redistribute connected'
+# to align with how OVN-K advertises routes (explicit prefixes, not redistribute)
 eval "docker exec frr vtysh \
   -c 'configure terminal' \
   -c 'router bgp 64512' \
@@ -130,13 +132,11 @@ eval "docker exec frr vtysh \
   -c 'exit-vrf' \
   -c \"router bgp 64512 vrf $VRF_NAME\" \
   -c 'address-family ipv4 unicast' \
-  -c 'redistribute connected' \
+  -c \"network ${AGNHOST_SUBNET}\" \
   -c 'exit-address-family' \
   -c 'address-family l2vpn evpn' \
   -c \"rd 64512:$VNI\" \
-  -c \"no route-target import 64512:$VNI\" \
   -c \"route-target import 64512:$VNI\" \
-  -c \"no route-target export 64512:$VNI\" \
   -c \"route-target export 64512:$VNI\" \
   -c 'advertise ipv4 unicast' \
   -c 'exit-address-family' \
@@ -349,16 +349,12 @@ header "Step 13: Configure frr-k8s VRF for EVPN Type-5"
 # IMPORTANT: Understanding the route-target timing issue
 # =============================================================================
 #
-# WHY WE USE "no route-target import" BEFORE "route-target import":
+# WHY WE USE "no route-target import" BEFORE "route-target import" (Step 2 below):
 #
 # 1. WHAT ALREADY EXISTS:
-#    When Step 11 (RouteAdvertisements) is applied, frr-k8s automatically creates:
-#      router bgp 64512 vrf evpn-l3-test
-#        address-family ipv4 unicast
-#          redistribute connected
-#        exit-address-family
-#      exit
-#    This is needed for frr-k8s to advertise pod routes from the VRF.
+#    When Step 11 (RouteAdvertisements) is applied, OVN-K generates FRRConfiguration
+#    with explicit Prefixes for the pod subnets. This is how OVN-K advertises routes
+#    (via explicit 'network' statements, NOT 'redistribute connected').
 #
 # 2. THE TIMING PROBLEM:
 #    - BGP session with external FRR establishes (from Step 10 FRRConfiguration)
@@ -375,9 +371,10 @@ header "Step 13: Configure frr-k8s VRF for EVPN Type-5"
 #    - VRF routing table stays empty → connectivity fails
 #
 # 4. THE FIX:
-#    - First apply the base config (works on fresh install)
-#    - Then do "no route-target" / "route-target" to force re-evaluation
-#    - The re-evaluation step is in a separate call so it can fail silently on fresh installs
+#    - First apply the base config (Step 1 - works on fresh install)
+#    - Then do "no route-target" / "route-target" to force re-evaluation (Step 2)
+#    - Step 2 is in a separate call with error handling so it can fail silently
+#      on fresh installs where no RT exists yet to remove
 #
 # This is a FRR behavior quirk, not a cleanup issue. Even with perfect cleanup,
 # this timing issue can occur because routes arrive before RT config is applied.
@@ -387,6 +384,8 @@ kubectl get pods -n frr-k8s-system -l app=frr-k8s -o custom-columns=POD:.metadat
   echo "=== Configuring frr-k8s $FRR_POD ==="
   
   # Step 1: Apply base EVPN config (works on fresh install)
+  # NOTE: We do NOT use 'redistribute connected' here because RouteAdvertisements
+  # handles pod subnet advertisement via explicit Prefixes in FRRConfiguration.
   kubectl exec -n frr-k8s-system $FRR_POD -c frr -- vtysh \
     -c "configure terminal" \
     -c "vrf evpn-l3-test" \
@@ -399,9 +398,6 @@ kubectl get pods -n frr-k8s-system -l app=frr-k8s -o custom-columns=POD:.metadat
     -c "exit-address-family" \
     -c "exit" \
     -c "router bgp 64512 vrf evpn-l3-test" \
-    -c "address-family ipv4 unicast" \
-    -c "redistribute connected" \
-    -c "exit-address-family" \
     -c "address-family l2vpn evpn" \
     -c "rd 64512:$VNI" \
     -c "route-target import 64512:$VNI" \
