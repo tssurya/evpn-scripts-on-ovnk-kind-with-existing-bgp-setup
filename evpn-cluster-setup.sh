@@ -101,27 +101,7 @@ cleanup_node() {
     local FRR_POD=$(find_frr_pod $node_name)
     local VRFNAME=$EVPN_NETWORK_NAME
     
-    # Cleanup frr-k8s
-    if [ -n "$FRR_POD" ]; then
-        log "[$node_name] Cleaning up frr-k8s EVPN config..."
-        kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
-            -c "configure terminal" \
-            -c "router bgp ${EVPN_BGP_ASN}" \
-            -c "address-family l2vpn evpn" \
-            -c "no advertise-all-vni" \
-            -c "exit-address-family" \
-            -c "end" 2>/dev/null || true
-        
-        if [ -n "$EVPN_IPVRF_VNI" ]; then
-            kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
-                -c "configure terminal" \
-                -c "no router bgp ${EVPN_BGP_ASN} vrf $VRFNAME" \
-                -c "no vrf $VRFNAME" \
-                -c "end" 2>/dev/null || true
-        fi
-    fi
-    
-    # Cleanup network devices
+    # Cleanup network devices FIRST - this makes the VRF "inactive" in FRR
     if [ -n "$OVN_POD" ]; then
         log "[$node_name] Cleaning up network devices..."
         
@@ -140,6 +120,26 @@ cleanup_node() {
             ip link del vxlan0 2>/dev/null || true
             ip link del br0 2>/dev/null || true
         " || true
+    fi
+    
+    # Cleanup frr-k8s AFTER network devices are gone (VRF is now inactive)
+    if [ -n "$FRR_POD" ]; then
+        log "[$node_name] Cleaning up frr-k8s EVPN config..."
+        kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
+            -c "configure terminal" \
+            -c "router bgp ${EVPN_BGP_ASN}" \
+            -c "address-family l2vpn evpn" \
+            -c "no advertise-all-vni" \
+            -c "exit-address-family" \
+            -c "end" 2>/dev/null || true
+        
+        if [ -n "$EVPN_IPVRF_VNI" ]; then
+            kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
+                -c "configure terminal" \
+                -c "no router bgp ${EVPN_BGP_ASN} vrf $VRFNAME" \
+                -c "no vrf $VRFNAME" \
+                -c "end" 2>/dev/null || true
+        fi
     fi
     
     log "[$node_name] Cleanup complete"
