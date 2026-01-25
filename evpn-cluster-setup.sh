@@ -41,21 +41,23 @@ validate_env() {
     done
 }
 
-# Get node's internal IP (prefer IPv4, fall back to IPv6)
+# Get node's internal IP (based on IP family from CUDN subnets)
+# Uses HAS_IPV4/HAS_IPV6 set by detect_ip_families()
 get_node_ip() {
     local node_name=$1
-    local ip
+    local addresses=$(kubectl get node $node_name -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
     
-    # Try IPv4 first
-    ip=$(kubectl get node $node_name -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}' | tr ' ' '\n' | grep -v ':' | head -1)
-    if [ -n "$ip" ]; then
-        echo "$ip"
+    # IPv4 (including dual-stack): return IPv4 address
+    if [ "$HAS_IPV4" = "true" ]; then
+        echo "$addresses" | tr ' ' '\n' | grep -v ':' | head -1
         return
     fi
-    
-    # Fall back to IPv6
-    ip=$(kubectl get node $node_name -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}' | tr ' ' '\n' | grep ':' | head -1)
-    echo "$ip"
+
+    # IPv6-only: return IPv6 address
+    if [ "$HAS_IPV6" = "true" ]; then
+        echo "$addresses" | tr ' ' '\n' | grep ':' | head -1
+        return
+    fi
 }
 
 # Find ovnkube-node pod on a node
