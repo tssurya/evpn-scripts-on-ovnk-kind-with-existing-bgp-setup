@@ -160,6 +160,9 @@ cleanup_node() {
             # EVPN bridge
             ip link del vxlan0 2>/dev/null || true
             ip link del br0 2>/dev/null || true
+            
+            # Linux VRF interface - MUST be deleted before FRR VRF definition
+            ip link del ${EVPN_NETWORK_NAME} 2>/dev/null || true
         " || true
     fi
     
