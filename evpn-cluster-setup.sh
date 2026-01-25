@@ -423,6 +423,12 @@ run_setup() {
         setup_node "$node_name"
     done
     
+    # Wait for full EVPN fabric convergence across all nodes
+    # This ensures Type-5 routes from external FRR are imported into ALL cluster VRFs
+    # before the test starts (per-node delays only ensure local node readiness)
+    log "Waiting for full EVPN fabric convergence..."
+    sleep 5
+    
     log "EVPN setup complete on all nodes"
 }
 
