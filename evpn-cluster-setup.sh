@@ -142,7 +142,7 @@ cleanup_node() {
         fi
     fi
     
-    # Step 3: Cleanup network devices (including Linux VRF interface)
+    # Step 3: Cleanup network devices (NOT including Linux VRF - that's done from FRR pod)
     if [ -n "$OVN_POD" ]; then
         log "[$node_name] Cleaning up network devices..."
         
@@ -160,19 +160,35 @@ cleanup_node() {
             # EVPN bridge
             ip link del vxlan0 2>/dev/null || true
             ip link del br0 2>/dev/null || true
-            
-            # Linux VRF interface - MUST be deleted before FRR VRF definition
-            ip link del ${EVPN_NETWORK_NAME} 2>/dev/null || true
         " || true
     fi
     
-    # Step 4: NOW remove FRR VRF definition (after Linux VRF is gone)
-    if [ -n "$FRR_POD" ] && [ -n "$EVPN_IPVRF_VNI" ]; then
-        log "[$node_name] Removing FRR VRF definition..."
-        kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
-            -c "configure terminal" \
-            -c "no vrf $VRFNAME" \
-            -c "end" 2>/dev/null || true
+    # ==========================================================================
+    # NOTE: We do NOT delete the FRR VRF definition ("no vrf evpnXXXX") here!
+    #
+    # Cleanup order:
+    # 1. This script runs first (cleanup_node)
+    # 2. e2e test AfterEach deletes CUDN
+    # 3. OVN-K watches CUDN deletion → calls vrfManager.DeleteVRF()
+    # 4. OVN-K deletes Linux VRF interface
+    # 5. zebra sees Linux VRF gone → removes "vrf evpnXXXX" from FRR config
+    #
+    # If we tried "no vrf evpnXXXX" in step 1, it would FAIL because:
+    # - CUDN still exists → OVN-K's VRF still exists → Linux VRF still exists
+    # - FRR refuses: "Only inactive VRFs can be deleted"
+    #
+    # We already removed VNI binding (step 1) and BGP VRF instance (step 2).
+    # The base "vrf evpnXXXX" definition will be cleaned up by zebra in step 5.
+    # ==========================================================================
+    
+    # Step 5: Persist clean config to disk
+    # ==========================================================================
+    # frr-k8s periodically reconciles and reloads from /etc/frr/frr.conf.
+    # If we don't save the clean config, frr-k8s will reload stale VRFs/BGP config.
+    # ==========================================================================
+    if [ -n "$FRR_POD" ]; then
+        log "[$node_name] Saving clean FRR config to disk..."
+        kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh -c "write memory" 2>/dev/null || true
     fi
     
     log "[$node_name] Cleanup complete"
