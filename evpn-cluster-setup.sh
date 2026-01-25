@@ -332,9 +332,8 @@ setup_node() {
             -c "exit-vrf" \
             -c "end" 2>/dev/null
         
-        # Wait for zebra to notify bgpd about the VRF-VNI association
-        log "[$node_name] Waiting for zebra-bgpd VRF-VNI sync..."
-        sleep 5
+        # Wait for zebra to notify bgpd about VRF-VNI association
+        sleep 2
     fi
     
     # Phase 2: Global EVPN BGP config (advertise-all-vni triggers VNI discovery)
@@ -364,19 +363,13 @@ setup_node() {
         return 1
     fi
     
-    # Wait for BGP sessions to establish and EVPN routes to converge
-    # This is needed for both MAC-VRF (Type-2/3) and IP-VRF (Type-5) routes
-    log "[$node_name] Waiting for EVPN route convergence..."
-    sleep 5
+    # Wait for BGP session establishment and VNI discovery
+    sleep 2
     
     # Phase 3: IP-VRF BGP config with route-targets (after bgpd knows about VRF-VNI)
     # NOTE: We do NOT use 'redistribute connected' here because RouteAdvertisements
     # handles pod subnet advertisement via explicit Prefixes in FRRConfiguration.
     if [ -n "$EVPN_IPVRF_VNI" ]; then
-        # Additional wait for advertise-all-vni to discover VNIs and associate with VRFs
-        log "[$node_name] Waiting for VNI discovery..."
-        sleep 5
-        
         log "[$node_name] Phase 3: Configuring IP-VRF BGP with route-targets..."
         VTYSH_CMDS="-c 'configure terminal'"
         VTYSH_CMDS="$VTYSH_CMDS -c 'router bgp ${EVPN_BGP_ASN} vrf ${VRFNAME}'"
@@ -406,9 +399,6 @@ setup_node() {
     # This handles the timing issue where routes arrived before RT was configured
     # Toggle BOTH import AND export to force FRR to re-evaluate routes
     if [ -n "$EVPN_IPVRF_VNI" ]; then
-        log "[$node_name] Waiting for BGP routes to arrive..."
-        sleep 10
-        
         log "[$node_name] Forcing route re-evaluation by toggling route-targets..."
         kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
             -c "configure terminal" \
