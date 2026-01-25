@@ -345,11 +345,16 @@ setup_node() {
         return 1
     fi
     
+    # Wait for BGP sessions to establish and EVPN routes to converge
+    # This is needed for both MAC-VRF (Type-2/3) and IP-VRF (Type-5) routes
+    log "[$node_name] Waiting for EVPN route convergence..."
+    sleep 5
+    
     # Phase 3: IP-VRF BGP config with route-targets (after bgpd knows about VRF-VNI)
     # NOTE: We do NOT use 'redistribute connected' here because RouteAdvertisements
     # handles pod subnet advertisement via explicit Prefixes in FRRConfiguration.
     if [ -n "$EVPN_IPVRF_VNI" ]; then
-        # Wait for advertise-all-vni to discover VNIs and associate with VRFs
+        # Additional wait for advertise-all-vni to discover VNIs and associate with VRFs
         log "[$node_name] Waiting for VNI discovery..."
         sleep 5
         
