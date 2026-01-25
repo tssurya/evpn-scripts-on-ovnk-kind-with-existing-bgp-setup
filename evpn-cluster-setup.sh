@@ -102,12 +102,17 @@ cleanup_node() {
     local VRFNAME=$EVPN_NETWORK_NAME
     
     # ==========================================================================
-    # CLEANUP ORDER: VNI binding -> BGP VRF -> FRR VRF -> Network devices
-    # The VNI binding MUST be removed first, otherwise FRR considers the VRF
-    # "active" and refuses to delete it with "Only inactive VRFs can be deleted"
+    # CLEANUP ORDER: VNI binding -> BGP VRF -> Network devices -> FRR VRF
+    # 
+    # FRR considers a VRF "active" if ANY of these exist:
+    # - VNI binding in the VRF
+    # - BGP routing instance for the VRF
+    # - Linux kernel VRF interface
+    #
+    # We must remove ALL of these before "no vrf" will succeed.
     # ==========================================================================
     
-    # Step 1: Remove VNI binding from FRR FIRST (makes VRF "inactive")
+    # Step 1: Remove VNI binding from FRR
     if [ -n "$FRR_POD" ] && [ -n "$EVPN_IPVRF_VNI" ]; then
         log "[$node_name] Removing VNI binding from FRR..."
         kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
@@ -118,9 +123,9 @@ cleanup_node() {
             -c "end" 2>/dev/null || true
     fi
     
-    # Step 2: Remove BGP VRF and FRR VRF definition
+    # Step 2: Remove BGP VRF instance (but NOT the FRR VRF definition yet)
     if [ -n "$FRR_POD" ]; then
-        log "[$node_name] Cleaning up frr-k8s EVPN config..."
+        log "[$node_name] Cleaning up frr-k8s BGP config..."
         kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
             -c "configure terminal" \
             -c "router bgp ${EVPN_BGP_ASN}" \
@@ -133,12 +138,11 @@ cleanup_node() {
             kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
                 -c "configure terminal" \
                 -c "no router bgp ${EVPN_BGP_ASN} vrf $VRFNAME" \
-                -c "no vrf $VRFNAME" \
                 -c "end" 2>/dev/null || true
         fi
     fi
     
-    # Step 3: Cleanup network devices LAST
+    # Step 3: Cleanup network devices (including Linux VRF interface)
     if [ -n "$OVN_POD" ]; then
         log "[$node_name] Cleaning up network devices..."
         
@@ -157,6 +161,15 @@ cleanup_node() {
             ip link del vxlan0 2>/dev/null || true
             ip link del br0 2>/dev/null || true
         " || true
+    fi
+    
+    # Step 4: NOW remove FRR VRF definition (after Linux VRF is gone)
+    if [ -n "$FRR_POD" ] && [ -n "$EVPN_IPVRF_VNI" ]; then
+        log "[$node_name] Removing FRR VRF definition..."
+        kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
+            -c "configure terminal" \
+            -c "no vrf $VRFNAME" \
+            -c "end" 2>/dev/null || true
     fi
     
     log "[$node_name] Cleanup complete"
