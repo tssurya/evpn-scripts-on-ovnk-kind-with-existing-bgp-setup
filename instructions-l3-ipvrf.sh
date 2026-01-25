@@ -265,6 +265,9 @@ run_cmd kubectl get clusteruserdefinednetwork evpn-l3-test -o yaml
 
 header "Step 10: Create FRRConfiguration"
 
+# For EVPN L3 IP-VRF, we don't need toReceive because:
+# - External routes (172.27.x.x) come via EVPN Type-5 and are imported via route-target matching
+# - The FRRConfiguration just provides the BGP neighbor definition and label for RA selector
 cat <<EOF | kubectl apply -f -
 apiVersion: frrk8s.metallb.io/v1beta1
 kind: FRRConfiguration
@@ -281,13 +284,8 @@ spec:
       - address: $FRR_IP
         asn: 64512
         disableMP: true
-        toReceive:
-          allowed:
-            mode: filtered
-            prefixes:
-            - prefix: ${AGNHOST_SUBNET}
-  # NOTE: rawConfig removed - Step 13 handles the EVPN VRF config via vtysh
-  # In a fully automated setup, OVN-K should generate this from CUDN spec
+        # No toReceive needed - EVPN routes come via l2vpn evpn address-family
+        # and are imported via route-target matching in the VRF (Step 13)
 EOF
 read
 

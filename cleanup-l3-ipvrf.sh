@@ -96,16 +96,26 @@ echo ""
 echo "--- Cleaning up external FRR ---"
 
 if docker ps --format '{{.Names}}' | grep -q '^frr$'; then
-  # Remove BGP VRF config - must remove in correct order
+  # Remove in correct order: VNI binding -> BGP VRF -> FRR VRF -> Linux VRF
   echo "  Removing BGP config..."
   
-  # First, remove the VRF-specific BGP instance
+  # 1. Remove VNI binding from VRF FIRST (required before anything else)
+  echo "    Removing VNI binding..."
+  docker exec frr vtysh \
+    -c "configure terminal" \
+    -c "vrf $VRF_NAME" \
+    -c "no vni $VNI" \
+    -c "exit-vrf" \
+    -c "end" 2>/dev/null || true
+  
+  # 2. Remove the VRF-specific BGP instance
+  echo "    Removing BGP VRF instance..."
   docker exec frr vtysh \
     -c "configure terminal" \
     -c "no router bgp 64512 vrf $VRF_NAME" \
     -c "end" 2>/dev/null || true
   
-  # Then remove advertise-all-vni from main BGP
+  # 3. Remove advertise-all-vni from main BGP
   docker exec frr vtysh \
     -c "configure terminal" \
     -c "router bgp 64512" \
@@ -115,7 +125,8 @@ if docker ps --format '{{.Names}}' | grep -q '^frr$'; then
     -c "exit" \
     -c "end" 2>/dev/null || true
   
-  # Finally remove the VRF definition
+  # 4. Remove the VRF definition from FRR
+  echo "    Removing FRR VRF definition..."
   docker exec frr vtysh \
     -c "configure terminal" \
     -c "no vrf $VRF_NAME" \
@@ -125,7 +136,7 @@ if docker ps --format '{{.Names}}' | grep -q '^frr$'; then
   echo "  Removing SVI br0.$VID..."
   docker exec frr ip link del br0.$VID 2>/dev/null || true
 
-  # Remove VRF
+  # Remove VRF (Linux)
   echo "  Removing VRF $VRF_NAME..."
   docker exec frr ip link del $VRF_NAME 2>/dev/null || true
 
