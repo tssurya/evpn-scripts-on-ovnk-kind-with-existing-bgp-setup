@@ -63,7 +63,7 @@ get_node_ip() {
 # Find ovnkube-node pod on a node
 find_ovn_pod() {
     local node_name=$1
-    kubectl get pods -n $EVPN_OVN_NAMESPACE -l name=ovnkube-node \
+    kubectl get pods -n $EVPN_OVN_NAMESPACE -l app=ovnkube-node \
         --field-selector spec.nodeName=$node_name \
         -o jsonpath='{.items[0].metadata.name}' 2>/dev/null
 }
