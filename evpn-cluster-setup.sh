@@ -20,6 +20,12 @@
 #   EVPN_IPVRF_VID        - IP-VRF VLAN ID (optional, if IP-VRF test)
 #   EVPN_CLEANUP          - Set to "true" to run cleanup instead of setup
 #
+# Derived internally (not passed as env vars):
+#   BRIDGE_NAME  - Linux bridge name derived as "br-<EVPN_NETWORK_NAME>" (e.g., br-evpn7a3f)
+#   VXLAN_NAME   - VXLAN device name derived as "vx-<EVPN_NETWORK_NAME>" (e.g., vx-evpn7a3f)
+#   Mirrors the naming scheme used by the Go test for the external FRR side,
+#   ensuring unique per-test device names for parallel test isolation.
+#
 # This script runs on the HOST machine (where kubectl is available).
 # =============================================================================
 
@@ -153,15 +159,15 @@ cleanup_node() {
         
         kubectl exec -n $EVPN_OVN_NAMESPACE $OVN_POD -c ovnkube-controller -- /bin/sh -c "
             # IP-VRF SVI
-            ip link del br0.${EVPN_IPVRF_VID:-0} 2>/dev/null || true
-            
+            ip link del ${BRIDGE_NAME}.${EVPN_IPVRF_VID:-0} 2>/dev/null || true
+
             # MAC-VRF OVS/OVN
             ovs-vsctl --if-exists del-port br-int evpn${EVPN_MACVRF_VNI:-0} 2>/dev/null || true
             ovn-nbctl --if-exists lsp-del ${OVN_PORT} 2>/dev/null || true
-            
+
             # EVPN bridge
-            ip link del vxlan0 2>/dev/null || true
-            ip link del br0 2>/dev/null || true
+            ip link del $VXLAN_NAME 2>/dev/null || true
+            ip link del $BRIDGE_NAME 2>/dev/null || true
         " || true
     fi
     
@@ -240,21 +246,21 @@ setup_node() {
     fi
     
     # === Setup EVPN Bridge ===
-    log "[$node_name] Setting up EVPN bridge (br0/vxlan0)..."
+    log "[$node_name] Setting up EVPN bridge ($BRIDGE_NAME/$VXLAN_NAME)..."
     kubectl exec -n $EVPN_OVN_NAMESPACE $OVN_POD -c ovnkube-controller -- /bin/sh -c "
-        ip link del br0 2>/dev/null || true
-        ip link del vxlan0 2>/dev/null || true
-        
-        ip link add br0 type bridge vlan_filtering 1 vlan_default_pvid 0
-        ip link set br0 addrgenmode none
-        
-        ip link add vxlan0 type vxlan dstport 4789 local $node_ip nolearning external vnifilter
-        ip link set vxlan0 addrgenmode none master br0
-        
-        ip link set br0 up
-        ip link set vxlan0 up
-        
-        bridge link set dev vxlan0 vlan_tunnel on neigh_suppress on learning off
+        ip link del $BRIDGE_NAME 2>/dev/null || true
+        ip link del $VXLAN_NAME 2>/dev/null || true
+
+        ip link add $BRIDGE_NAME type bridge vlan_filtering 1 vlan_default_pvid 0
+        ip link set $BRIDGE_NAME addrgenmode none
+
+        ip link add $VXLAN_NAME type vxlan dstport 4789 local $node_ip nolearning external vnifilter
+        ip link set $VXLAN_NAME addrgenmode none master $BRIDGE_NAME
+
+        ip link set $BRIDGE_NAME up
+        ip link set $VXLAN_NAME up
+
+        bridge link set dev $VXLAN_NAME vlan_tunnel on neigh_suppress on learning off
     "
     
     # === Setup MAC-VRF ===
@@ -266,18 +272,18 @@ setup_node() {
         local OVN_PORT="cluster_udn_${NETWORK_DOTTED}_evpn_port"
         
         kubectl exec -n $EVPN_OVN_NAMESPACE $OVN_POD -c ovnkube-controller -- /bin/sh -c "
-            bridge vlan add dev br0 vid $EVPN_MACVRF_VID self
-            bridge vlan add dev vxlan0 vid $EVPN_MACVRF_VID
-            bridge vni add dev vxlan0 vni $EVPN_MACVRF_VNI
-            bridge vlan add dev vxlan0 vid $EVPN_MACVRF_VID tunnel_info id $EVPN_MACVRF_VNI
-            
+            bridge vlan add dev $BRIDGE_NAME vid $EVPN_MACVRF_VID self
+            bridge vlan add dev $VXLAN_NAME vid $EVPN_MACVRF_VID
+            bridge vni add dev $VXLAN_NAME vni $EVPN_MACVRF_VNI
+            bridge vlan add dev $VXLAN_NAME vid $EVPN_MACVRF_VID tunnel_info id $EVPN_MACVRF_VNI
+
             ovs-vsctl --if-exists del-port br-int evpn${EVPN_MACVRF_VNI}
             ovs-vsctl add-port br-int evpn${EVPN_MACVRF_VNI} -- set interface evpn${EVPN_MACVRF_VNI} type=internal external-ids:iface-id=${OVN_PORT}
-            
-            ip link set evpn${EVPN_MACVRF_VNI} master br0
+
+            ip link set evpn${EVPN_MACVRF_VNI} master $BRIDGE_NAME
             bridge vlan add dev evpn${EVPN_MACVRF_VNI} vid $EVPN_MACVRF_VID pvid untagged
             ip link set evpn${EVPN_MACVRF_VNI} up
-            
+
             ovn-nbctl --if-exists lsp-del ${OVN_PORT}
             ovn-nbctl lsp-add $OVN_SWITCH ${OVN_PORT}
             ovn-nbctl lsp-set-addresses ${OVN_PORT} unknown
@@ -291,16 +297,16 @@ setup_node() {
         local VRFNAME=$EVPN_NETWORK_NAME
         
         kubectl exec -n $EVPN_OVN_NAMESPACE $OVN_POD -c ovnkube-controller -- /bin/sh -c "
-            bridge vlan add dev br0 vid $EVPN_IPVRF_VID self
-            bridge vlan add dev vxlan0 vid $EVPN_IPVRF_VID
-            bridge vni add dev vxlan0 vni $EVPN_IPVRF_VNI
-            bridge vlan add dev vxlan0 vid $EVPN_IPVRF_VID tunnel_info id $EVPN_IPVRF_VNI
-            
-            ip link del br0.$EVPN_IPVRF_VID 2>/dev/null || true
-            ip link add br0.$EVPN_IPVRF_VID link br0 type vlan id $EVPN_IPVRF_VID
-            ip link set br0.$EVPN_IPVRF_VID addrgenmode none
-            ip link set br0.$EVPN_IPVRF_VID master $VRFNAME
-            ip link set br0.$EVPN_IPVRF_VID up
+            bridge vlan add dev $BRIDGE_NAME vid $EVPN_IPVRF_VID self
+            bridge vlan add dev $VXLAN_NAME vid $EVPN_IPVRF_VID
+            bridge vni add dev $VXLAN_NAME vni $EVPN_IPVRF_VNI
+            bridge vlan add dev $VXLAN_NAME vid $EVPN_IPVRF_VID tunnel_info id $EVPN_IPVRF_VNI
+
+            ip link del ${BRIDGE_NAME}.${EVPN_IPVRF_VID} 2>/dev/null || true
+            ip link add ${BRIDGE_NAME}.${EVPN_IPVRF_VID} link $BRIDGE_NAME type vlan id $EVPN_IPVRF_VID
+            ip link set ${BRIDGE_NAME}.${EVPN_IPVRF_VID} addrgenmode none
+            ip link set ${BRIDGE_NAME}.${EVPN_IPVRF_VID} master $VRFNAME
+            ip link set ${BRIDGE_NAME}.${EVPN_IPVRF_VID} up
         "
     fi
     
@@ -424,6 +430,8 @@ run_setup() {
     log "  EVPN_CUDN_SUBNETS: $EVPN_CUDN_SUBNETS"
     log "  EVPN_MACVRF_VNI/VID: ${EVPN_MACVRF_VNI:-none}/${EVPN_MACVRF_VID:-none}"
     log "  EVPN_IPVRF_VNI/VID: ${EVPN_IPVRF_VNI:-none}/${EVPN_IPVRF_VID:-none}"
+    log "  BRIDGE_NAME: $BRIDGE_NAME"
+    log "  VXLAN_NAME:  $VXLAN_NAME"
     
     # Detect IP families once
     detect_ip_families
@@ -448,6 +456,12 @@ run_setup() {
 # =============================================================================
 
 validate_env
+
+# Derive unique bridge/VXLAN device names from EVPN_NETWORK_NAME for parallel test isolation.
+# Mirrors the Go test naming scheme for the external FRR side (bridgeName/vxlanName).
+# Linux interface names are limited to 15 characters; EVPN_NETWORK_NAME is ~9 chars max.
+BRIDGE_NAME="br-${EVPN_NETWORK_NAME}"
+VXLAN_NAME="vx-${EVPN_NETWORK_NAME}"
 
 if [ "$EVPN_CLEANUP" = "true" ]; then
     run_cleanup
