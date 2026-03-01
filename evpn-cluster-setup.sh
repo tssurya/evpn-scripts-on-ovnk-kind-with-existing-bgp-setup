@@ -134,14 +134,19 @@ cleanup_node() {
     # Step 2: Remove BGP VRF instance (but NOT the FRR VRF definition yet)
     if [ -n "$FRR_POD" ]; then
         log "[$node_name] Cleaning up frr-k8s BGP config..."
-        kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
-            -c "configure terminal" \
-            -c "router bgp ${EVPN_BGP_ASN}" \
-            -c "address-family l2vpn evpn" \
-            -c "no advertise-all-vni" \
-            -c "exit-address-family" \
-            -c "end" 2>/dev/null || true
-        
+        # Remove only per-test MAC-VRF VNI config from the global BGP l2vpn evpn address-family.
+        # Do NOT remove advertise-all-vni - it is a global setting shared across all parallel
+        # tests; removing it would break other concurrently running EVPN tests.
+        if [ -n "$EVPN_MACVRF_VNI" ]; then
+            kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
+                -c "configure terminal" \
+                -c "router bgp ${EVPN_BGP_ASN}" \
+                -c "address-family l2vpn evpn" \
+                -c "no vni ${EVPN_MACVRF_VNI}" \
+                -c "exit-address-family" \
+                -c "end" 2>/dev/null || true
+        fi
+
         if [ -n "$EVPN_IPVRF_VNI" ]; then
             kubectl exec -n $EVPN_FRR_NAMESPACE $FRR_POD -c frr -- vtysh \
                 -c "configure terminal" \
