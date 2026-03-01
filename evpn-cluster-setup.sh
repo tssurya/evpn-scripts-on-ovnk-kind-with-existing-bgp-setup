@@ -21,8 +21,8 @@
 #   EVPN_CLEANUP          - Set to "true" to run cleanup instead of setup
 #
 # Derived internally (not passed as env vars):
-#   BRIDGE_NAME  - Linux bridge name derived as "br-<EVPN_NETWORK_NAME>" (e.g., br-evpn7a3f)
-#   VXLAN_NAME   - VXLAN device name derived as "vx-<EVPN_NETWORK_NAME>" (e.g., vx-evpn7a3f)
+#   BRIDGE_NAME  - Linux bridge name derived as "br<EVPN_NETWORK_NAME>" (e.g., brevpn7a3f)
+#   VXLAN_NAME   - VXLAN device name derived as "vx<EVPN_NETWORK_NAME>" (e.g., vxevpn7a3f)
 #   Mirrors the naming scheme used by the Go test for the external FRR side,
 #   ensuring unique per-test device names for parallel test isolation.
 #
@@ -464,9 +464,10 @@ validate_env
 
 # Derive unique bridge/VXLAN device names from EVPN_NETWORK_NAME for parallel test isolation.
 # Mirrors the Go test naming scheme for the external FRR side (bridgeName/vxlanName).
-# Linux interface names are limited to 15 characters; EVPN_NETWORK_NAME is ~9 chars max.
-BRIDGE_NAME="br-${EVPN_NETWORK_NAME}"
-VXLAN_NAME="vx-${EVPN_NETWORK_NAME}"
+# No dash: "br-" prefix would make SVI names ("br-evpn9999.4094") 16 chars, exceeding the
+# Linux 15-char interface name limit. "br" + "evpn9999" = 10 chars, leaving room for ".4094".
+BRIDGE_NAME="br${EVPN_NETWORK_NAME}"
+VXLAN_NAME="vx${EVPN_NETWORK_NAME}"
 
 if [ "$EVPN_CLEANUP" = "true" ]; then
     run_cleanup
