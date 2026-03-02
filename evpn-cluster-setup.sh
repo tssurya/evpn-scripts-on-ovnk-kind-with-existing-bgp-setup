@@ -159,16 +159,12 @@ cleanup_node() {
     if [ -n "$OVN_POD" ]; then
         log "[$node_name] Cleaning up network devices..."
         
-        local NETWORK_DOTTED=${EVPN_NETWORK_NAME//-/.}
-        local OVN_PORT="cluster_udn_${NETWORK_DOTTED}_evpn_port"
-        
         kubectl exec -n $EVPN_OVN_NAMESPACE $OVN_POD -c ovnkube-controller -- /bin/sh -c "
             # IP-VRF SVI
             ip link del ${BRIDGE_NAME}.${EVPN_IPVRF_VID:-0} 2>/dev/null || true
 
-            # MAC-VRF OVS/OVN
+            # MAC-VRF OVS port (LSP is managed by ovnk)
             ovs-vsctl --if-exists del-port br-int evpn${EVPN_MACVRF_VNI:-0} 2>/dev/null || true
-            ovn-nbctl --if-exists lsp-del ${OVN_PORT} 2>/dev/null || true
 
             # EVPN bridge
             ip link del $VXLAN_NAME 2>/dev/null || true
@@ -274,8 +270,9 @@ setup_node() {
         
         local NETWORK_DOTTED=${EVPN_NETWORK_NAME//-/.}
         local OVN_SWITCH="cluster_udn_${NETWORK_DOTTED}_ovn_layer2_switch"
-        local OVN_PORT="cluster_udn_${NETWORK_DOTTED}_evpn_port"
-        
+        # ovnk creates and manages this LSP; we just need the name to set iface-id
+        local OVN_PORT="macvrf-${OVN_SWITCH}"
+
         kubectl exec -n $EVPN_OVN_NAMESPACE $OVN_POD -c ovnkube-controller -- /bin/sh -c "
             bridge vlan add dev $BRIDGE_NAME vid $EVPN_MACVRF_VID self
             bridge vlan add dev $VXLAN_NAME vid $EVPN_MACVRF_VID
@@ -288,10 +285,6 @@ setup_node() {
             ip link set evpn${EVPN_MACVRF_VNI} master $BRIDGE_NAME
             bridge vlan add dev evpn${EVPN_MACVRF_VNI} vid $EVPN_MACVRF_VID pvid untagged
             ip link set evpn${EVPN_MACVRF_VNI} up
-
-            ovn-nbctl --if-exists lsp-del ${OVN_PORT}
-            ovn-nbctl lsp-add $OVN_SWITCH ${OVN_PORT}
-            ovn-nbctl lsp-set-addresses ${OVN_PORT} unknown
         "
     fi
     
